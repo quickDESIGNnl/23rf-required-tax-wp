@@ -8,22 +8,22 @@ Stable tag: 1.0.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Enforce at least one taxonomy term on publish for selected post types in both the block and classic editors.
+Prevent accidental publishing by forcing at least one taxonomy term before a post can be saved or published.
 
 == Description ==
 
-Required Taxonomies lets you define a matrix of post types and taxonomies from the WordPress admin. Any combination you enable becomes mandatory when a user attempts to publish (or schedule/pending) a post, page, or custom post type. Drafts can still be saved, but publishing is blocked until all required taxonomies contain at least one term.
+Required Taxonomies lets you define a matrix of post types and taxonomies from the WordPress admin. Any combination you enable becomes mandatory when a user attempts to publish or update content. Drafts can still be saved, but publishing and updating stay locked until all required taxonomies contain at least one term.
 
-* Works with the Block Editor (Gutenberg) and Classic/Quick Edit.
+* Works with the Block Editor (Gutenberg) and Classic editor using client-side publish/save locking.
 * Compatible with JetEngine and other plugins that register public, UI-enabled post types or taxonomies.
-* Highlights taxonomy panels when validation fails and displays a clear error notice.
+* Automatically refreshes the settings screen after saving so the matrix reflects the latest configuration.
 * Includes a live-searchable settings matrix for a better admin experience.
 
 == Installation ==
 
 1. Upload the plugin files to the `/wp-content/plugins/required-taxonomies` directory, or install the plugin through the WordPress plugins screen directly.
 2. Activate the plugin through the 'Plugins' screen in WordPress.
-3. Navigate to **Settings → Required Taxonomies** to configure which taxonomy columns are required per post type.
+3. Navigate to **Settings → Tax verplicht** to configure which taxonomy columns are required per post type.
 
 == Frequently Asked Questions ==
 
@@ -33,7 +33,7 @@ Yes. Any public post type or taxonomy that exposes a UI will appear in the confi
 
 = Can drafts be saved without the required terms? =
 
-Yes. Validation only runs when a post is being published, scheduled, or moved to pending review.
+Yes. Validation only runs when a post is being published or updated to a public-facing status. Drafts remain unaffected.
 
 == Screenshots ==
 

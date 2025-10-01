@@ -1,394 +1,277 @@
 <?php
 /**
  * Plugin Name: Required Taxonomies
- * Plugin URI:  https://example.com/
- * Description: Force users to assign at least one term for selected taxonomies per post type in both the block and classic editors.
- * Version:     1.0.0
- * Author:      OpenAI Assistant
- * License:     GPLv2 or later
- * License URI: https://www.gnu.org/licenses/gpl-2.0.html
- * Text Domain: required-taxonomies
+ * Description: Enforce taxonomy selection per post type with a simple admin matrix and editor-side publish lock.
+ * Version: 1.0.0
+ * Author: OpenAI Assistant
+ * License: GPLv2 or later
  */
 
-if ( ! defined( 'ABSPATH' ) ) {
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+define( 'SK_TAX_REQ_OPTION', 'sk_tax_required_matrix' );
+
+/* =========================
+ * Instellingenpagina (matrix)
+ * ========================= */
+add_action( 'admin_menu', function () {
+add_options_page(
+'Tax verplicht',
+'Tax verplicht',
+'manage_options',
+'sk-tax-verplicht',
+'sk_tax_req_render_settings'
+);
+} );
+
+function sk_tax_req_render_settings() {
+if ( 'POST' === $_SERVER['REQUEST_METHOD'] ) {
+check_admin_referer( 'sk_tax_req_save', 'sk_tax_req_nonce' );
+if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Geen bevoegdheid.' );
+
+$ptypes = get_post_types( array( 'public' => true, 'show_ui' => true ), 'names' );
+$taxes  = get_taxonomies( array( 'public' => true, 'show_ui' => true ), 'names' );
+
+// Filter onzinnige items
+$ptypes = array_diff( $ptypes, array( 'attachment','nav_menu_item','revision','custom_css','customize_changeset','wp_block' ) );
+$taxes  = array_diff( $taxes,  array( 'post_format','nav_menu','link_category' ) );
+
+$matrix = array();
+if ( isset( $_POST['sk_req'] ) && is_array( $_POST['sk_req'] ) ) {
+foreach ( $ptypes as $pt ) {
+if ( empty( $_POST['sk_req'][ $pt ] ) ) continue;
+foreach ( $taxes as $tx ) {
+if ( isset( $_POST['sk_req'][ $pt ][ $tx ] ) && is_object_in_taxonomy( $pt, $tx ) ) {
+$matrix[ $pt ][] = sanitize_key( $tx );
+}
+}
+}
+}
+
+update_option( SK_TAX_REQ_OPTION, $matrix );
+
+// Redirect/refresh zodat de matrix direct opnieuw rendert
+$target_url = add_query_arg( 'updated', '1', menu_page_url( 'sk-tax-verplicht', false ) );
+
+// 1) Normale redirect als headers nog niet verstuurd zijn
+if ( ! headers_sent() ) {
+wp_safe_redirect( $target_url );
 exit;
 }
 
-if ( ! defined( 'SK_TAX_REQ_OPTION' ) ) {
-define( 'SK_TAX_REQ_OPTION', 'sk_tax_required_matrix' );
+// 2) Fallback voor WPCode/eval: forceer client-side refresh
+$esc = esc_url( $target_url );
+echo '<script>window.location.replace("'.$esc.'");</script>';
+echo '<noscript><meta http-equiv="refresh" content="0;url='.$esc.'"></noscript>';
+return; // stop verdere output
 }
 
-/* ----------------------------------------------------------------------------
- * Settings page (matrix)
- * ------------------------------------------------------------------------- */
+$matrix  = get_option( SK_TAX_REQ_OPTION, array() );
+$pt_objs = get_post_types( array( 'public' => true, 'show_ui' => true ), 'objects' );
+$tx_objs = get_taxonomies( array( 'public' => true, 'show_ui' => true ), 'objects' );
 
-add_action( 'admin_menu', 'sk_tax_req_register_settings_page' );
-
-function sk_tax_req_register_settings_page() {
-add_options_page(
-__( 'Required Taxonomies', 'required-taxonomies' ),
-__( 'Required Taxonomies', 'required-taxonomies' ),
-'manage_options',
-'sk-tax-required',
-'sk_tax_req_render_settings_page'
-);
-}
-
-function sk_tax_req_render_settings_page() {
-if ( 'POST' === $_SERVER['REQUEST_METHOD'] ) {
-sk_tax_req_handle_settings_form();
-}
-
-$required = get_option( SK_TAX_REQ_OPTION, array() );
-$pt_objs  = get_post_types( array( 'public' => true, 'show_ui' => true ), 'objects' );
-$tx_objs  = get_taxonomies( array( 'public' => true, 'show_ui' => true ), 'objects' );
-
+// Filter
 unset( $pt_objs['attachment'], $pt_objs['nav_menu_item'], $pt_objs['revision'], $pt_objs['custom_css'], $pt_objs['customize_changeset'], $pt_objs['wp_block'] );
 unset( $tx_objs['post_format'], $tx_objs['nav_menu'], $tx_objs['link_category'] );
 
-echo '<div class="wrap">';
-echo '<h1>' . esc_html__( 'Required taxonomies per post type', 'required-taxonomies' ) . '</h1>';
-
-if ( isset( $_GET['updated'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Settings saved.', 'required-taxonomies' ) . '</p></div>';
-}
+echo '<div class="wrap"><h1>Verplichte taxonomieën per post type</h1>';
+if ( isset($_GET['updated']) ) echo '<div class="notice notice-success is-dismissible"><p>Instellingen opgeslagen.</p></div>';
 
 echo '<form method="post">';
 wp_nonce_field( 'sk_tax_req_save', 'sk_tax_req_nonce' );
+echo '<p>Selecteer per post type welke taxonomieën verplicht zijn (minimaal één term nodig om te kunnen publiceren/opslaan).</p>';
+echo '<p><input id="sk-matrix-search" type="text" placeholder="Zoek post type of tax…" style="max-width:280px;padding:4px 8px"></p>';
 
-echo '<p>' . esc_html__( 'Select which taxonomies are required per post type (at least one term is needed to publish).', 'required-taxonomies' ) . '</p>';
-echo '<p><input type="text" id="sk-matrix-search" placeholder="' . esc_attr__( 'Search post type or taxonomy…', 'required-taxonomies' ) . '" style="max-width:280px;padding:4px 8px" /></p>';
-
-echo '<table class="widefat striped" id="sk-matrix">';
-echo '<thead><tr><th style="min-width:220px">' . esc_html__( 'Post Type \\ Taxonomy', 'required-taxonomies' ) . '</th>';
-
+// Matrix
+echo '<table class="widefat striped" id="sk-matrix"><thead><tr><th style="min-width:220px">Post Type \\ Taxonomie</th>';
 foreach ( $tx_objs as $tx => $txo ) {
-echo '<th data-tax="' . esc_attr( $tx ) . '" style="text-align:center;white-space:nowrap">' . esc_html( $txo->labels->name ) . '<br><code>' . esc_html( $tx ) . '</code></th>';
+echo '<th style="text-align:center;white-space:nowrap">' . esc_html( $txo->labels->name ) . '<br><code>'. esc_html($tx) .'</code></th>';
 }
-
 echo '</tr></thead><tbody>';
 
 foreach ( $pt_objs as $pt => $pto ) {
-echo '<tr data-pt="' . esc_attr( $pt ) . '">';
-echo '<th scope="row" style="white-space:nowrap">' . esc_html( $pto->labels->name ) . ' <code>' . esc_html( $pt ) . '</code></th>';
-
+echo '<tr><th scope="row" style="white-space:nowrap">'. esc_html($pto->labels->name) .' <code>'. esc_html($pt) .'</code></th>';
 foreach ( $tx_objs as $tx => $txo ) {
 echo '<td style="text-align:center">';
 if ( is_object_in_taxonomy( $pt, $tx ) ) {
-$checked = ( ! empty( $required[ $pt ] ) && in_array( $tx, $required[ $pt ], true ) ) ? 'checked' : '';
-echo '<label><input type="checkbox" name="sk_req[' . esc_attr( $pt ) . '][' . esc_attr( $tx ) . ']" value="1" ' . $checked . ' /></label>';
+$checked = ( ! empty($matrix[$pt]) && in_array($tx, $matrix[$pt], true) ) ? 'checked' : '';
+echo '<label><input type="checkbox" name="sk_req['. esc_attr($pt) .']['. esc_attr($tx) .']" value="1" '. $checked .' /></label>';
 } else {
 echo '&#8212;';
 }
 echo '</td>';
 }
-
 echo '</tr>';
 }
-
 echo '</tbody></table>';
+submit_button( 'Instellingen opslaan' );
 
-submit_button( __( 'Save Changes', 'required-taxonomies' ) );
-
+// simpele filter
 echo '<script>
 (function(){
-var q = document.getElementById("sk-matrix-search");
-if(!q){return;}
-q.addEventListener("input", function(){
-var s = (q.value||"").toLowerCase();
+var q=document.getElementById("sk-matrix-search"); if(!q) return;
+q.addEventListener("input",function(){
+var s=(q.value||"").toLowerCase();
 document.querySelectorAll("#sk-matrix tbody tr").forEach(function(tr){
-var rowText = tr.innerText.toLowerCase();
-tr.style.display = rowText.indexOf(s) > -1 ? "" : "none";
+tr.style.display = tr.innerText.toLowerCase().indexOf(s)>-1 ? "" : "none";
 });
 });
 })();
 </script>';
 
-echo '</form>';
-echo '</div>';
+echo '</form></div>';
 }
 
-function sk_tax_req_handle_settings_form() {
-check_admin_referer( 'sk_tax_req_save', 'sk_tax_req_nonce' );
-
-if ( ! current_user_can( 'manage_options' ) ) {
-wp_die( esc_html__( 'You are not allowed to access this page.', 'required-taxonomies' ) );
-}
-
-$required = array();
-
-$ptypes = get_post_types( array( 'public' => true, 'show_ui' => true ), 'names' );
-$taxes  = get_taxonomies( array( 'public' => true, 'show_ui' => true ), 'names' );
-
-$ptypes = array_diff( $ptypes, array( 'attachment', 'nav_menu_item', 'revision', 'custom_css', 'customize_changeset', 'wp_block' ) );
-$taxes  = array_diff( $taxes, array( 'post_format', 'nav_menu', 'link_category' ) );
-
-if ( isset( $_POST['sk_req'] ) && is_array( $_POST['sk_req'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
-foreach ( $ptypes as $pt ) {
-if ( empty( $_POST['sk_req'][ $pt ] ) || ! is_array( $_POST['sk_req'][ $pt ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
-continue;
-}
-
-foreach ( $taxes as $tax ) {
-if ( isset( $_POST['sk_req'][ $pt ][ $tax ] ) && is_object_in_taxonomy( $pt, $tax ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
-$required[ $pt ][] = sanitize_key( $tax );
-}
-}
-}
-}
-
-update_option( SK_TAX_REQ_OPTION, $required );
-wp_safe_redirect( add_query_arg( 'updated', '1', menu_page_url( 'sk-tax-required', false ) ) );
-exit;
-}
-
-/* ----------------------------------------------------------------------------
- * Validation helpers
- * ------------------------------------------------------------------------- */
-
+/* =========================
+ * Data + scripts voor editor
+ * ========================= */
 function sk_tax_req_get_required_for_pt( $post_type ) {
 $matrix = get_option( SK_TAX_REQ_OPTION, array() );
-return isset( $matrix[ $post_type ] ) ? (array) $matrix[ $post_type ] : array();
+return isset($matrix[$post_type]) ? (array) $matrix[$post_type] : array();
 }
 
-function sk_tax_req_post_has_terms( $post_id, $post_type, $tax ) {
-if ( ! taxonomy_exists( $tax ) || ! is_object_in_taxonomy( $post_type, $tax ) ) {
+add_action( 'admin_enqueue_scripts', function( $hook ){
+if ( ! in_array( $hook, array('post-new.php','post.php'), true ) ) return;
+
+$screen = get_current_screen();
+if ( empty( $screen->post_type ) ) return;
+
+$required_tax = sk_tax_req_get_required_for_pt( $screen->post_type );
+if ( empty( $required_tax ) ) return;
+
+// Bouw mapping: tax_slug => ['label'=>..., 'rest_base'=>..., 'hierarchical'=>true/false]
+$map = array();
+foreach ( $required_tax as $tx ) {
+$txo = get_taxonomy( $tx );
+if ( ! $txo ) continue;
+$rest = $txo->rest_base ? $txo->rest_base : $txo->name;
+if ( 'category' === $tx ) $rest = 'categories';
+if ( 'post_tag' === $tx ) $rest = 'tags';
+$map[ $tx ] = array(
+'label'        => $txo->labels->name ?: $tx,
+'rest_base'    => $rest,
+'hierarchical' => (bool) $txo->hierarchical,
+);
+}
+
+/* -------- Classic editor -------- */
+wp_register_script( 'sk-tax-req-classic', false, array('jquery'), false, true );
+wp_enqueue_script( 'sk-tax-req-classic' );
+
+$cfg_json = wp_json_encode( $map );
+$classic_js = <<<'JS'
+(function($){
+var cfg = __CFG__;
+// Meldingsbalk
+function ensureNotice(msg){
+var id="sk-tax-req-notice";
+var $n = $("#"+id);
+if(!$n.length){
+$n = $('<div id="'+id+'" class="notice notice-error is-dismissible" style="margin:10px 0;"><p></p></div>');
+$(".wrap h1").first().after($n);
+}
+$n.find("p").text(msg);
+}
+function clearNotice(){ $("#sk-tax-req-notice").remove(); }
+
+function hasTermsClassic(slug, hierarchical){
+if(hierarchical){
+// Checkboxes in #taxonomy-{slug} of #{slug}div
+var sel1 = '#taxonomy-' + slug + ' input[type=checkbox][name^="tax_input[' + slug + ']"]';
+var sel2 = '#' + slug + 'div input[type=checkbox][name^="tax_input[' + slug + ']"]';
+if( $(sel1).filter(':checked').length > 0 || $(sel2).filter(':checked').length > 0 ){
 return true;
 }
-
-$terms = wp_get_object_terms( $post_id, $tax, array( 'fields' => 'ids' ) );
-return ( is_array( $terms ) && ! is_wp_error( $terms ) && ! empty( $terms ) );
-}
-
-function sk_tax_req_is_publish_intent( $new_status, $orig_status = '' ) {
-if ( in_array( $new_status, array( 'publish', 'future' ), true ) ) {
+// Ook nested UL/LIs fallback
+var wrapSel1 = '#taxonomy-' + slug + ' .categorychecklist input[type=checkbox]:checked';
+var wrapSel2 = '#' + slug + 'div .categorychecklist input[type=checkbox]:checked';
+if( $(wrapSel1).length > 0 || $(wrapSel2).length > 0 ){
 return true;
 }
-
-if ( 'pending' === $new_status ) {
+} else {
+// Tags UI: hidden input tax_input[slug] of tokenfield items
+var inputSel = 'input[name="tax_input[' + slug + ']"]';
+if( $(inputSel).length && $.trim($(inputSel).val()).length ){
 return true;
 }
-
-if ( $orig_status && 'draft' === $orig_status && in_array( $new_status, array( 'publish', 'pending', 'future' ), true ) ) {
+if( $('#tagsdiv-' + slug + ' .tagchecklist > span').length > 0 ){
 return true;
 }
-
+}
 return false;
 }
 
-/* ----------------------------------------------------------------------------
- * Gutenberg / REST guard
- * ------------------------------------------------------------------------- */
-
-add_action( 'rest_api_init', 'sk_tax_req_register_rest_guards' );
-
-function sk_tax_req_register_rest_guards() {
-$ptypes = get_post_types( array( 'public' => true ), 'names' );
-$ptypes = array_diff( $ptypes, array( 'attachment', 'nav_menu_item', 'revision', 'custom_css', 'customize_changeset', 'wp_block' ) );
-
-foreach ( $ptypes as $pt ) {
-add_filter( "rest_pre_insert_{$pt}", function( $prepared, $request ) use ( $pt ) {
-$req = sk_tax_req_get_required_for_pt( $pt );
-
-if ( empty( $req ) ) {
-return $prepared;
-}
-
-$status = isset( $prepared->post_status ) ? $prepared->post_status : $request->get_param( 'status' );
-
-if ( ! $status || ! sk_tax_req_is_publish_intent( $status ) ) {
-return $prepared;
-}
-
-$post_id = (int) $request->get_param( 'id' );
-$missing = array();
-$labels  = array();
-
-foreach ( $req as $tax ) {
-$txo = get_taxonomy( $tax );
-
-if ( ! $txo ) {
-continue;
-}
-
-$rest_field = $txo->rest_base ? $txo->rest_base : $txo->name;
-
-if ( 'category' === $tax ) {
-$rest_field = 'categories';
-}
-
-if ( 'post_tag' === $tax ) {
-$rest_field = 'tags';
-}
-
-$val = $request->get_param( $rest_field );
-$has = false;
-
-if ( is_array( $val ) ) {
-$has = count( array_filter( $val ) ) > 0;
-} elseif ( null !== $val ) {
-$has = ! empty( $val );
-}
-
-if ( ! $has && $post_id ) {
-$has = sk_tax_req_post_has_terms( $post_id, $pt, $tax );
-}
-
-if ( ! $has ) {
-$missing[] = $tax;
-$labels[]  = $txo->labels->name ? $txo->labels->name : $tax;
+function checkAll(){
+var missing=[];
+$.each(cfg, function(slug,meta){
+if(!hasTermsClassic(slug, meta.hierarchical)){ missing.push(meta.label); }
+});
+var $btn = $("#publish, #save-post");
+if(missing.length){
+$btn.prop("disabled", true).addClass("button-disabled");
+ensureNotice("Publiceren/opslaan geblokkeerd: voeg minimaal één term toe voor: " + missing.join(", ") + ".");
+}else{
+$btn.prop("disabled", false).removeClass("button-disabled");
+clearNotice();
 }
 }
 
-if ( ! empty( $missing ) ) {
-return new WP_Error(
-'sk_required_tax_missing',
-sprintf(
-/* translators: %s: comma separated list of taxonomy names */
-__( 'Publishing blocked: please assign at least one term for: %s.', 'required-taxonomies' ),
-implode( ', ', $labels )
-),
-array(
-'status'        => 400,
-'missing'       => $labels,
-'missing_slugs' => $missing,
-)
-);
-}
+$(document).on("change input click", function(){ setTimeout(checkAll, 60); });
+$(function(){ setTimeout(checkAll, 250); });
+})(jQuery);
+JS;
+$classic_js = str_replace( '__CFG__', $cfg_json, $classic_js );
+wp_add_inline_script( 'sk-tax-req-classic', $classic_js );
 
-return $prepared;
-}, 10, 2 );
-}
-}
-
-/* ----------------------------------------------------------------------------
- * Classic / Quick edit guard
- * ------------------------------------------------------------------------- */
-
-add_filter( 'wp_insert_post_data', 'sk_tax_req_block_classic_publishing', 10, 2 );
-
-function sk_tax_req_block_classic_publishing( $data, $postarr ) {
-$post_type = isset( $postarr['post_type'] ) ? $postarr['post_type'] : $data['post_type'];
-$req       = sk_tax_req_get_required_for_pt( $post_type );
-
-if ( empty( $req ) ) {
-return $data;
-}
-
-$orig_status = isset( $postarr['original_post_status'] ) ? $postarr['original_post_status'] : '';
-
-if ( ! sk_tax_req_is_publish_intent( $data['post_status'], $orig_status ) ) {
-return $data;
-}
-
-$post_id = isset( $postarr['ID'] ) ? (int) $postarr['ID'] : 0;
-$missing = array();
-
-foreach ( $req as $tax ) {
-if ( ! $post_id || ! sk_tax_req_post_has_terms( $post_id, $post_type, $tax ) ) {
-$missing[] = $tax;
-}
-}
-
-if ( ! empty( $missing ) ) {
-$data['post_status'] = 'draft';
-$GLOBALS['sk_tax_req_missing_for_redirect'] = implode( ',', array_map( 'sanitize_key', $missing ) );
-}
-
-return $data;
-}
-
-add_filter( 'redirect_post_location', 'sk_tax_req_inject_redirect_error', 99 );
-
-function sk_tax_req_inject_redirect_error( $location ) {
-if ( ! empty( $GLOBALS['sk_tax_req_missing_for_redirect'] ) ) {
-$location = remove_query_arg( 'message', $location );
-$location = add_query_arg( 'sk_tax_req_error', rawurlencode( $GLOBALS['sk_tax_req_missing_for_redirect'] ), $location );
-unset( $GLOBALS['sk_tax_req_missing_for_redirect'] );
-}
-
-return $location;
-}
-
-/* ----------------------------------------------------------------------------
- * Notices + UI highlight (classic + block editor)
- * ------------------------------------------------------------------------- */
-
-add_action( 'admin_notices', 'sk_tax_req_show_admin_notice' );
-
-function sk_tax_req_show_admin_notice() {
-if ( empty( $_GET['sk_tax_req_error'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-return;
-}
-
-$slugs  = array_map( 'sanitize_key', explode( ',', $_GET['sk_tax_req_error'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-$labels = array();
-
-foreach ( $slugs as $tx ) {
-$txo = get_taxonomy( $tx );
-$labels[] = $txo && ! empty( $txo->labels->name ) ? $txo->labels->name : $tx;
-}
-
-echo '<div class="notice notice-error"><p><strong>' . esc_html__( 'Publishing blocked.', 'required-taxonomies' ) . '</strong> ' . esc_html__( 'Please assign at least one term for:', 'required-taxonomies' ) . ' <em>' . esc_html( implode( ', ', $labels ) ) . '</em>.</p></div>';
-echo '<style>';
-foreach ( $slugs as $tx ) {
-$tx = esc_html( $tx );
-echo "#{$tx}div .inside, #tagsdiv-{$tx} .inside { border: 2px solid #dc3232 !important; box-shadow: 0 0 0 2px rgba(220,50,50,.12) inset; }";
-}
-echo '</style>';
-}
-
-add_action( 'enqueue_block_editor_assets', 'sk_tax_req_highlight_block_editor_panels' );
-
-function sk_tax_req_highlight_block_editor_panels() {
+/* -------- Gutenberg editor -------- */
 wp_register_script(
 'sk-tax-req-editor',
 false,
-array( 'wp-data', 'wp-edit-post', 'wp-dom-ready' ),
+array( 'wp-data','wp-edit-post','wp-dom-ready','wp-notices' ),
 false,
 true
 );
-
 wp_enqueue_script( 'sk-tax-req-editor' );
 
-$js = <<<JS
+$gutenberg_js = <<<'JS'
+(function(){
+var cfg = __CFG__;
+var LOCK_KEY = "sk-tax-required";
+
+function getTermsFor(restBase){
+var val = wp.data.select("core/editor").getEditedPostAttribute(restBase);
+if(typeof val === "number"){ return val ? [val] : []; }
+if(Array.isArray(val)) return val.filter(Boolean);
+if(typeof val === "string") return val.trim() ? val.split(",") : [];
+return [];
+}
+
+function evaluate(){
+var missing = [];
+Object.keys(cfg).forEach(function(slug){
+var meta  = cfg[slug];
+var terms = getTermsFor(meta.rest_base);
+if(!terms || terms.length === 0){ missing.push(meta.label); }
+});
+if(missing.length){
+wp.data.dispatch("core/editor").lockPostSaving(LOCK_KEY);
+wp.data.dispatch("core/notices").createNotice(
+"error",
+"Publiceren/opslaan geblokkeerd: voeg minimaal één term toe voor: " + missing.join(", ") + ".",
+{ id: "sk-tax-req", isDismissible: true }
+);
+}else{
+wp.data.dispatch("core/editor").unlockPostSaving(LOCK_KEY);
+wp.data.dispatch("core/notices").removeNotice("sk-tax-req");
+}
+}
+
 wp.domReady(function(){
-wp.data.subscribe(function(){
-var isSaving = wp.data.select('core/editor').isSavingPost();
-var isAutoSave = wp.data.select('core/editor').isAutosavingPost();
-
-if ( isSaving || isAutoSave ) {
-return;
-}
-
-var err = wp.data.select('core/editor').getPostSaveError();
-
-if ( ! err ) {
-clearHighlight();
-return;
-}
-
-if ( err.code !== 'sk_required_tax_missing' || ! err.data ) {
-clearHighlight();
-return;
-}
-
-wp.data.dispatch('core/edit-post').openGeneralSidebar('edit-post/document');
-
-document.querySelectorAll('.editor-post-taxonomies__hierarchical-terms-list, .components-form-token-field__input').forEach(function(el){
-el.style.border = '2px solid #dc3232';
-el.style.boxShadow = '0 0 0 2px rgba(220,50,50,.12) inset';
+wp.data.subscribe(function(){ setTimeout(evaluate, 0); });
+setTimeout(evaluate, 250);
 });
-});
-
-function clearHighlight(){
-document.querySelectorAll('.editor-post-taxonomies__hierarchical-terms-list, .components-form-token-field__input').forEach(function(el){
-el.style.border = '';
-el.style.boxShadow = '';
-});
-}
-});
+})();
 JS;
-
-wp_add_inline_script( 'sk-tax-req-editor', $js );
-}
+$gutenberg_js = str_replace( '__CFG__', $cfg_json, $gutenberg_js );
+wp_add_inline_script( 'sk-tax-req-editor', $gutenberg_js );
+});
